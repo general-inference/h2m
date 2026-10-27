@@ -112,12 +112,23 @@ impl DuckDuckGo {
             Err(e) => return Err(e),
         };
 
-        let mut response = SearchResponse::new(&query.query, PROVIDER_ID);
-        for hit in hits.into_iter().take(query.limit) {
-            response.push(SearchSource::Web, hit);
+        Ok(search_response(query, hits, start))
+    }
+
+    /// Searches only the lite endpoint, allowing callers to schedule fallbacks separately.
+    ///
+    /// # Errors
+    ///
+    /// Returns a configuration error for an empty query, or the HTTP/parsing error.
+    pub async fn search_lite(&self, query: &SearchQuery) -> Result<SearchResponse, SearchError> {
+        if !query.is_valid() {
+            return Err(SearchError::Config {
+                message: "search query is empty".into(),
+            });
         }
-        response.elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-        Ok(response)
+        let start = Instant::now();
+        let hits = self.fetch_lite(query).await?;
+        Ok(search_response(query, hits, start))
     }
 
     async fn fetch_html(&self, query: &SearchQuery) -> Result<Vec<SearchHit>, SearchError> {
@@ -154,6 +165,15 @@ impl DuckDuckGo {
         let hits = parse_lite_results(&body)?;
         Ok(hits.into_iter().take(query.limit).collect())
     }
+}
+
+fn search_response(query: &SearchQuery, hits: Vec<SearchHit>, start: Instant) -> SearchResponse {
+    let mut response = SearchResponse::new(&query.query, PROVIDER_ID);
+    for hit in hits.into_iter().take(query.limit) {
+        response.push(SearchSource::Web, hit);
+    }
+    response.elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    response
 }
 
 /// Typed builder for [`DuckDuckGo`].
@@ -254,6 +274,28 @@ mod tests {
             .retry(RetryPolicy::NONE)
             .build()
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn explicit_lite_never_requests_html() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/lite"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(SAMPLE_LITE))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let provider = build_provider("http://unused", &format!("{}/lite", server.uri()));
+        let response = provider
+            .search_lite(&SearchQuery::new("rust").with_limit(1))
+            .await
+            .unwrap();
+        assert_eq!(response.web.len(), 1);
+        assert_eq!(response.web[0].title, "Rust Lang");
+        assert!(matches!(
+            provider.search_lite(&SearchQuery::new("")).await,
+            Err(SearchError::Config { .. })
+        ));
     }
 
     #[tokio::test]

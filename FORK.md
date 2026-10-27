@@ -1,13 +1,15 @@
 # General Inference fork
 
 The `gi` branch carries integration fixes for `h2m-search` on top of upstream
-`8bf8a75`. Max and Goose do not yet consume this fork.
+`8bf8a75`.
 
 - DuckDuckGo HTTP 202 responses are classified as challenges before testing
   success status, independently of the response body.
 - Every search provider limits decoded response bodies to 2 MiB by default,
   checking both advertised lengths and streamed chunks before accumulation.
   Oversized bodies return the non-retryable `SearchError::ResponseTooLarge`.
+- `DuckDuckGo::search_lite` lets hosts schedule the Lite fallback independently.
+- `WikipediaBuilder::endpoint` supports mirrors and offline integration fixtures.
 - Hosts can retain their own `reqwest::Client` and configure the body limit:
 
   ```rust

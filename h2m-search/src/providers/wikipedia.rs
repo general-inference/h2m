@@ -59,6 +59,7 @@ const WIKI_PATH_SET: &AsciiSet = &CONTROLS
 pub struct Wikipedia {
     http: HttpConfig,
     language: String,
+    endpoint: Option<url::Url>,
     retry_policy: RetryPolicy,
 }
 
@@ -100,6 +101,7 @@ impl Wikipedia {
         let start = Instant::now();
         let effective_lang = query.language.as_deref().unwrap_or(&self.language);
         let endpoint = build_endpoint(effective_lang)?;
+        let endpoint = self.endpoint.clone().unwrap_or(endpoint);
         let srlimit = query.limit.min(MAX_SRLIMIT).to_string();
         let body = retry(&self.retry_policy, || {
             self.fetch(endpoint.clone(), &query.query, &srlimit)
@@ -157,11 +159,20 @@ impl Wikipedia {
 #[derive(Debug, Default)]
 pub struct WikipediaBuilder {
     language: Option<String>,
+    endpoint: Option<url::Url>,
     http: Option<HttpConfig>,
     retry: Option<RetryPolicy>,
 }
 
 impl WikipediaBuilder {
+    /// Overrides the API endpoint for mirrors or local HTTP fixtures.
+    /// Article URLs still use the selected Wikipedia language edition.
+    #[must_use]
+    pub fn endpoint(mut self, endpoint: url::Url) -> Self {
+        self.endpoint = Some(endpoint);
+        self
+    }
+
     /// Sets the Wikipedia language edition (e.g. `"en"`, `"zh"`, `"ja"`).
     ///
     /// Empty or whitespace-only strings are ignored. Per-query
@@ -199,6 +210,7 @@ impl WikipediaBuilder {
         Ok(Wikipedia {
             http: super::common::resolve_http(self.http)?,
             language: self.language.unwrap_or_else(|| DEFAULT_LANGUAGE.into()),
+            endpoint: self.endpoint,
             retry_policy: super::common::resolve_retry(self.retry),
         })
     }
@@ -301,31 +313,17 @@ mod tests {
 
     use super::*;
 
-    /// Drives `fetch` against a wiremock server, then maps results using
-    /// the same logic as [`Wikipedia::search`] but with a fixed endpoint.
     async fn run_against_mock(
         server: &MockServer,
         query: &SearchQuery,
     ) -> Result<SearchResponse, SearchError> {
-        let provider = Wikipedia::builder()
+        Wikipedia::builder()
             .retry(RetryPolicy::NONE)
+            .endpoint(url::Url::parse(&format!("{}/w/api.php", server.uri())).unwrap())
             .build()
-            .unwrap();
-        let endpoint = url::Url::parse(&format!("{}/w/api.php", server.uri())).unwrap();
-        let srlimit = query.limit.min(MAX_SRLIMIT).to_string();
-        let body = provider.fetch(endpoint, &query.query, &srlimit).await?;
-        let mut response = SearchResponse::new(&query.query, PROVIDER_ID);
-        let mut hits: Vec<_> = body
-            .query
-            .search
-            .into_iter()
-            .map(|r| r.into_hit("en"))
-            .collect();
-        hits.truncate(query.limit);
-        for hit in hits {
-            response.push(SearchSource::Web, hit);
-        }
-        Ok(response)
+            .unwrap()
+            .search(query)
+            .await
     }
 
     #[tokio::test]
